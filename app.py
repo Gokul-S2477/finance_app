@@ -25,8 +25,7 @@ def hash_password(p):
 for k, v in {
     "logged_in": False,
     "page": "login",
-    "customer_id": None,
-    "loan_id": None
+    "customer_id": None
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -38,8 +37,7 @@ def go(p):
 def generate_pdf(customer, loan, hist):
     buf = io.BytesIO()
     pdf = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    y = h - 40
+    y = A4[1] - 40
 
     pdf.setFont("Helvetica-Bold", 16)
     pdf.drawString(40, y, "GANAPATHI FINANCE – LOAN STATEMENT")
@@ -64,7 +62,7 @@ def generate_pdf(customer, loan, hist):
     for _, r in hist.iterrows():
         if y < 50:
             pdf.showPage()
-            y = h - 40
+            y = A4[1] - 40
         pdf.drawString(40, y, str(r["collection_date"]))
         pdf.drawString(130, y, f"₹{r['amount_due']}")
         pdf.drawString(190, y, f"₹{r['amount_paid']}")
@@ -99,14 +97,16 @@ if not st.session_state.logged_in:
             st.error("Invalid username or password")
     st.stop()
 
-# ================= TOP NAV =================
+# ================= TOP NAV (BIG BOXES) =================
 def top_nav():
+    st.markdown("###")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.button("🏠", use_container_width=True, on_click=lambda: go("dashboard"))
-    c2.button("👥", use_container_width=True, on_click=lambda: go("customers"))
-    c3.button("💰", use_container_width=True, on_click=lambda: go("collection"))
-    c4.button("➕", use_container_width=True, on_click=lambda: go("new_customer"))
-    c5.button("📊", use_container_width=True, on_click=lambda: go("reports"))
+    c1.button("🏠\nDashboard", use_container_width=True, on_click=lambda: go("dashboard"))
+    c2.button("👥\nCustomers", use_container_width=True, on_click=lambda: go("customers"))
+    c3.button("💰\nDaily\nCollection", use_container_width=True, on_click=lambda: go("collection"))
+    c4.button("➕\nNew\nLoan", use_container_width=True, on_click=lambda: go("new_customer"))
+    c5.button("📊\nReports", use_container_width=True, on_click=lambda: go("reports"))
+    st.divider()
 
 # ================= DASHBOARD =================
 if st.session_state.page == "dashboard":
@@ -132,7 +132,6 @@ if st.session_state.page == "dashboard":
         ORDER BY collection_date DESC
         LIMIT 20
     """, con)
-
     con.close()
 
     st.metric("Total Customers", int(k.total_customers))
@@ -166,12 +165,11 @@ elif st.session_state.page == "new_customer":
 
         con = get_conn()
         cur = con.cursor()
-
         cur.execute("""
             INSERT INTO customers (customer_code,name,mobile1,address)
             VALUES (%s,%s,%s,%s) RETURNING id
         """, (code, name, mobile, address))
-        cid = int(cur.fetchone()[0])
+        cid = cur.fetchone()[0]
 
         cur.execute("""
             INSERT INTO loans
@@ -180,26 +178,27 @@ elif st.session_state.page == "new_customer":
             VALUES (%s,%s,%s,0,%s,%s,%s,%s,%s,'Active')
             RETURNING id
         """, (cid, total, total, daily, days, loan_date, start, end))
-        loan_id = int(cur.fetchone()[0])
+        lid = cur.fetchone()[0]
 
         for i in range(days):
             cur.execute("""
                 INSERT INTO daily_collections
                 (loan_id,collection_date,amount_due,amount_paid,status)
                 VALUES (%s,%s,%s,0,'Pending')
-            """, (loan_id, start + timedelta(days=i), daily))
+            """, (lid, start + timedelta(days=i), daily))
 
         con.commit()
         cur.close(); con.close()
-
-        st.success("Customer and Loan Created")
+        st.success("Customer & Loan Created")
         go("dashboard")
         st.rerun()
 
-# ================= CUSTOMERS =================
+# ================= CUSTOMERS (SMART SEARCH) =================
 elif st.session_state.page == "customers":
     top_nav()
     st.markdown(f"## {APP} – Customers")
+
+    search = st.text_input("🔍 Search (Name / Customer ID)", placeholder="Type name or ID")
 
     con = get_conn()
     df = pd.read_sql("""
@@ -210,6 +209,13 @@ elif st.session_state.page == "customers":
         ORDER BY c.id DESC
     """, con)
     con.close()
+
+    if search:
+        s = search.lower()
+        df = df[
+            df["name"].str.lower().str.contains(s)
+            | df["customer_code"].str.lower().str.contains(s)
+        ]
 
     for _, r in df.iterrows():
         with st.container(border=True):
@@ -233,8 +239,7 @@ elif st.session_state.page == "customer_dashboard":
     st.markdown(f"## 👤 {customer['name']} – Loan History")
 
     for _, loan in loans.iterrows():
-        lid = int(loan.id)
-
+        lid = loan.id
         con = get_conn()
         hist = pd.read_sql("""
             SELECT collection_date,amount_due,amount_paid,status
@@ -260,64 +265,13 @@ elif st.session_state.page == "customer_dashboard":
                 "application/pdf"
             )
 
-            if loan.status == "Active" and remaining <= 0:
-                con = get_conn()
-                cur = con.cursor()
-                cur.execute("UPDATE loans SET status='Closed' WHERE id=%s", (lid,))
-                con.commit()
-                cur.close(); con.close()
-                st.success("Loan Auto Closed")
-
-            if loan.status == "Active":
-                if st.button("🔒 Close Loan", key=f"close{lid}"):
-                    con = get_conn()
-                    cur = con.cursor()
-                    cur.execute("UPDATE loans SET status='Closed' WHERE id=%s", (lid,))
-                    con.commit()
-                    cur.close(); con.close()
-                    st.rerun()
-
-    st.divider()
-    st.markdown("### ➕ Create New Loan")
-
-    na = st.number_input("New Loan Amount", min_value=0)
-    nd = st.number_input("New Daily Amount", min_value=0)
-    ndays = st.number_input("Duration", value=100, min_value=1)
-    ndate = st.date_input("Loan Date", value=date.today())
-
-    if st.button("Create New Loan", use_container_width=True):
-        start = ndate + timedelta(days=1)
-        end = start + timedelta(days=ndays - 1)
-
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("""
-            INSERT INTO loans
-            (customer_id,total_amount,amount_given,interest,
-             daily_amount,duration_days,loan_date,start_date,end_date,status)
-            VALUES (%s,%s,%s,0,%s,%s,%s,%s,%s,'Active')
-            RETURNING id
-        """, (cid, na, na, nd, ndays, ndate, start, end))
-        new_id = int(cur.fetchone()[0])
-
-        for i in range(ndays):
-            cur.execute("""
-                INSERT INTO daily_collections
-                (loan_id,collection_date,amount_due,amount_paid,status)
-                VALUES (%s,%s,%s,0,'Pending')
-            """, (new_id, start + timedelta(days=i), nd))
-
-        con.commit()
-        cur.close(); con.close()
-        st.success("New Loan Created")
-        st.rerun()
-
-# ================= DAILY COLLECTION =================
+# ================= DAILY COLLECTION (SMART + FAST) =================
 elif st.session_state.page == "collection":
     top_nav()
     st.markdown(f"## {APP} – 💰 Daily Collection")
 
     sel_date = st.date_input("Date", value=date.today())
+    search = st.text_input("🔍 Quick Search", placeholder="Search customer name")
 
     con = get_conn()
     df = pd.read_sql("""
@@ -331,6 +285,9 @@ elif st.session_state.page == "collection":
     """, con, params=(sel_date,))
     con.close()
 
+    if search:
+        df = df[df["name"].str.lower().str.contains(search.lower())]
+
     expected = int(df.amount_due.sum())
     collected = int(df.amount_paid.sum())
     pending = expected - collected
@@ -343,20 +300,17 @@ elif st.session_state.page == "collection":
     QUICK = [0, 50, 100, 200, 300, 400, 500, 1000]
 
     for _, r in df.iterrows():
+        status_icon = "🟢" if r.amount_paid > 0 else "🔴"
         with st.container(border=True):
             a,b,c,d,e,f = st.columns([3,2,2,2,2,1])
-            a.write(f"**{r['name']}**")
+            a.write(f"{status_icon} **{r['name']}**")
             b.write(f"Loan ₹{r['total_amount']}")
             c.write(f"Due ₹{r['amount_due']}")
 
             quick = d.selectbox("Quick", QUICK, key=f"q{r.id}", label_visibility="collapsed")
-            amt = e.number_input(
-                "Paid",
-                min_value=0,
-                value=quick if quick > 0 else r.amount_paid,
-                key=f"p{r.id}",
-                label_visibility="collapsed"
-            )
+            amt = e.number_input("Paid", min_value=0,
+                                 value=quick if quick > 0 else r.amount_paid,
+                                 key=f"p{r.id}", label_visibility="collapsed")
 
             if f.button("✔", key=f"s{r.id}"):
                 con = get_conn()
@@ -364,13 +318,12 @@ elif st.session_state.page == "collection":
                 cur.execute("""
                     UPDATE daily_collections
                     SET amount_paid=%s,status=%s WHERE id=%s
-                """, (amt, "Paid" if amt > 0 else "Missed", int(r.id)))
+                """, (amt, "Paid" if amt > 0 else "Missed", r.id))
                 con.commit()
                 cur.close(); con.close()
                 st.rerun()
 
     st.divider()
-    st.markdown("### 📊 Daily Summary")
     st.bar_chart(pd.DataFrame(
         {"Amount":[expected, collected, pending]},
         index=["Expected","Collected","Pending"]
